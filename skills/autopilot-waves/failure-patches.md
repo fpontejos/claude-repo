@@ -35,7 +35,7 @@ Each entry has the same shape:
 
 **Patch — prepend to prompt:**
 
-```
+```text
 ## Output contract (re-dispatch after silent failure)
 
 You MUST produce: {artifact_path}
@@ -63,7 +63,7 @@ First action: confirm the Write tool is available by listing the directory:
 
 **Patch — replace `subagent_type` and prepend:**
 
-```
+```text
 ## Tool requirements (re-dispatch after permission gap)
 
 This task requires: {Write | Edit | Bash}.
@@ -91,7 +91,7 @@ Action expected: {create | edit | run+commit}
 
 **Patch — prepend to prompt as section #1:**
 
-```
+```text
 ## TOOL DISCIPLINE (read before any action)
 
 Use ONLY these tools for file operations. The bash equivalents are blocked by
@@ -130,7 +130,7 @@ this task as your first sentence.
 1. **Revert the off-limits edits first** (`git checkout -- <off-limits-paths>`). Do this before re-dispatching.
 2. **Prepend to prompt:**
 
-```
+```text
 ## SCOPE LOCK (re-dispatch after scope creep)
 
 Allowed paths (you may create/modify ONLY these):
@@ -167,7 +167,7 @@ Your previous attempt edited: {file_list}. These were reverted. Do not repeat.
 2. **Re-dispatch as two parallel agents in a single message**, each with ~half the original prompt.
 3. **Prepend to each:**
 
-```
+```text
 ## Bounded scope (split after context overflow)
 
 You are agent {N}/2 of a split. Your half is: {description}.
@@ -195,7 +195,7 @@ exceeds this, STOP and report — do not continue past the limit.
 
 **Patch — rewrite, don't append:**
 
-```
+````text
 ## Concrete spec (re-dispatch after wrong-understanding)
 
 Previous attempt produced: {summary_of_wrong_output}
@@ -211,7 +211,7 @@ What we actually need:
 
 If the acceptance test cannot pass with your implementation, STOP and report
 the gap — do not produce something that doesn't satisfy it.
-```
+````
 
 **subagent_type override:** None.
 
@@ -229,7 +229,7 @@ the gap — do not produce something that doesn't satisfy it.
 
 **Patch — append required-elements checklist:**
 
-```
+```text
 ## Quality bar (re-dispatch after quality_below_bar)
 
 Previous attempt was {accepted_shape_but_failed_quality}. To pass this wave,
@@ -275,7 +275,7 @@ The orchestrator should:
 
 **Patch (when re-dispatch IS warranted):**
 
-```
+```text
 ## Test regression fix (targeted)
 
 Wave {N}'s integration gate failed with these tests:
@@ -305,7 +305,7 @@ Do not add new tests. Do not touch files outside {wave_files ∪ test_files}.
 
 **Patch — re-dispatch with the canonical fixture pinned:**
 
-```
+```text
 ## Acceptance oracle (re-dispatch after fixture_oracle_mismatch)
 
 The previous attempt passed its tests but produced the wrong result on the
@@ -356,7 +356,7 @@ This is the one mode that breaks the autopilot loop. Read the refusal carefully:
 
 **Escalation block (always, never auto-retry):**
 
-```
+```text
 WAVE {N} REFUSED by agent
 Reason given: {refusal_text}
 Recommended next action: {one_of: fix_precondition | clarify_request | accept_refusal_and_replan}
