@@ -70,3 +70,7 @@ cd claude-ai-skills && zip -r ../<name>.skill <name>
 ## Status
 
 Extracted from a private skill collection in July 2026. Skill content reflects lessons from ~6 months of daily multi-agent orchestration across production codebases.
+
+## License
+
+[Apache-2.0](LICENSE), repo-wide. `claude-ai-skills/artifact-project/` retains its own copy of the same license from its upstream derivation.
