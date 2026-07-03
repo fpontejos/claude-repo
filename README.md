@@ -52,6 +52,21 @@ Some skills mention companions that are not part of this set. Everything degrade
 - `/plan` and a `.claude/memorybank/` directory — a session-continuity system; `clarify` records decisions there when it exists and skips when it doesn't.
 - `~/.claude/hooks/` — optional hooks that mechanically detect silent agent failures; `agent-preflight` works without them.
 
+## claude.ai artifact skills
+
+`claude-ai-skills/` holds two skills for the **claude.ai Artifacts runtime** (not Claude Code — different environment, different constraints):
+
+| Skill | Role |
+|---|---|
+| `artifact-creator` | Single-file React artifacts: library ecosystem reference (recharts, three, tone, papaparse, …) plus the runtime's hard rules (no localStorage, no `<form>` tags, chart.js via UMD script). |
+| `artifact-project` | Complex multi-component artifacts: scaffold a React + TypeScript + Tailwind + shadcn/ui project, bundle it into a single self-contained HTML artifact, and optionally package compilable source for the user. Apache-2.0 (see its `LICENSE.txt`); derived from Anthropic's artifact-building skill with a local source-packaging extension. |
+
+The source directories are canonical. To build an uploadable `.skill` bundle (zips are gitignored):
+
+```bash
+cd claude-ai-skills && zip -r ../<name>.skill <name>
+```
+
 ## Status
 
 Extracted from a private skill collection in July 2026. Skill content reflects lessons from ~6 months of daily multi-agent orchestration across production codebases.
