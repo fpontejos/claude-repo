@@ -6,18 +6,21 @@ These are not speculative templates: every skill here is validated by sustained 
 
 ## The pipeline
 
-```
-clarify ──► contract-driven-planning ──► writing-plans ──► orchestrating-agent-waves ──► postmortem
- (scope)      (multi-component only)      (design.md +          │        (on failure)
-                                           plan.md +            ├── agent-preflight  (before every dispatch)
-                                           progress.md)         ├── autopilot-waves  (autonomous variant)
-                                                                └── boil-the-ocean   (completion standard)
+```mermaid
+flowchart LR
+    clarify["clarify<br><em>scope</em>"] --> cdp["contract-driven-planning<br><em>multi-component only</em>"]
+    cdp --> wp["writing-plans<br><em>design.md + plan.md + progress.md</em>"]
+    wp --> waves["orchestrating-agent-waves"]
+    waves --> pm["postmortem<br><em>on failure</em>"]
+    pre["agent-preflight<br><em>before every dispatch</em>"] -.-> waves
+    auto["autopilot-waves<br><em>autonomous variant</em>"] -.-> waves
+    boil["boil-the-ocean<br><em>completion standard</em>"] -.-> waves
 ```
 
 ## The skills
 
 | Skill | Role |
-|---|---|
+| --- | --- |
 | `clarify` | Guided questioning to pin down scope, output format, and approach before any work starts. |
 | `contract-driven-planning` | For multi-component systems (frontend + backend, producer + consumer): independent component designs plus an exact interface contract, so components can be built in parallel without drift. |
 | `writing-plans` | Turns an approved spec into `docs/plans/YYYY-MM-DD-<feature>/` — a grounded `design.md` (every number re-derived from source), a task-by-task `plan.md` with verify gates and approval gates, and a scaffolded `progress.md` tracker for multi-wave plans. |
@@ -57,7 +60,7 @@ Some skills mention companions that are not part of this set. Everything degrade
 `claude-ai-skills/` holds two skills for the **claude.ai Artifacts runtime** (not Claude Code — different environment, different constraints):
 
 | Skill | Role |
-|---|---|
+| --- | --- |
 | `artifact-creator` | Single-file React artifacts: library ecosystem reference (recharts, three, tone, papaparse, …) plus the runtime's hard rules (no localStorage, no `<form>` tags, chart.js via UMD script). |
 | `artifact-project` | Complex multi-component artifacts: scaffold a React + TypeScript + Tailwind + shadcn/ui project, bundle it into a single self-contained HTML artifact, and optionally package compilable source for the user. Apache-2.0 (see its `LICENSE.txt`); derived from Anthropic's artifact-building skill with a local source-packaging extension. |
 
