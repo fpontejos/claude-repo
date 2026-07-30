@@ -21,10 +21,14 @@ This skill runs **independent** waves — agents that share no runtime state and
 
 **Two rules keep wave agents ephemeral:**
 
-1. **Spawn anonymous and foreground.** Do *not* pass a `name` and do *not* set `run_in_background` on wave agents. A named agent is addressable via `SendMessage` and is therefore kept alive; a backgrounded agent detaches and persists. Wave workers are throwaway — an unnamed, foreground `Agent` call returns its result inline and is the closest thing to the old fire-and-forget subagent. Reserve named/backgrounded teammates for `spawn-team`, where coordination is the point.
+1. **Spawn anonymous and explicitly foreground.** Do *not* pass a `name`, and **pass `run_in_background: false` explicitly** on every wave agent.
+
+   > **The Agent tool backgrounds by default.** Omitting `run_in_background` does *not* give you a foreground agent — the tool description states: *"Subagents run in the background by default; you'll be notified when one completes. Pass `run_in_background: false` for a synchronous run when you need the result before continuing."* An earlier version of this skill said "do not set `run_in_background`", which under the current harness detaches every wave agent. That is the single most common cause of wave agents that appear to go idle and never deliver a report.
+
+   A named agent is addressable via `SendMessage` and is therefore kept alive; a backgrounded agent detaches and persists. Wave workers are throwaway — an unnamed `Agent` call with `run_in_background: false` returns its result inline and is the closest thing to the old fire-and-forget subagent. Reserve named/backgrounded teammates for `spawn-team`, where coordination is the point.
 2. **Tear down at the wave teardown step.** After each wave's gate + commit, reap any teammate still alive from this wave before proceeding (see Per-Wave Loop step 5, TEARDOWN). This restores the "fresh agents only, no resume" invariant that the skill assumes.
 
-If the agent-teams flag is **off**, dispatch is already fire-and-forget and the teardown step is a cheap no-op — `TaskList` returns nothing to stop. The rules above are safe in both modes.
+If the agent-teams flag is **off**, dispatch is fire-and-forget and the teardown step is a cheap no-op — `TaskList` returns nothing to stop. Both rules are safe in either mode, so apply them unconditionally rather than branching on the flag.
 
 ## When to Use
 
@@ -314,7 +318,7 @@ For each wave (in order):
 
 1. LAUNCH — Parallel agents in a single message
    - Apply `agent-preflight` Gate 1 to each agent (tools declared, subagent_type matched, output contract stated, scope bounded)
-   - Spawn **anonymous + foreground** (no `name`, no `run_in_background`) so agents stay ephemeral — see Dispatch Model
+   - Spawn **anonymous + explicitly foreground** (no `name`; `run_in_background: false`) so agents stay ephemeral — see Dispatch Model. Omitting `run_in_background` backgrounds the agent; it must be passed as `false`.
    - Sonnet model by default (per agent-plan.md)
    - Each agent gets: task prompt + interface summary + relevant code excerpts
    - Agents run their own test suite and self-fix
@@ -335,10 +339,11 @@ For each wave (in order):
    - Conventional commit message reflecting the wave's purpose
    - Stage only the files from this wave (not `git add -A`)
 
-5. TEARDOWN — Reap stale teammates (agent-teams harness only)
+5. TEARDOWN — Reap stale teammates
+   - **Load the tool schemas first:** `TaskList` and `TaskStop` are *deferred* tools — their schemas are not in the base toolset, and calling them directly fails with `InputValidationError`. Run `ToolSearch("select:TaskList,TaskStop")` once per session before the first teardown.
    - Run `TaskList`; any teammate spawned for this wave that is still listed (not reaped) is a stale agent
    - `TaskStop` each one by its `task_id` before proceeding
-   - Anonymous foreground agents (per LAUNCH) usually reap themselves on return — this step is the backstop for any that linger, and a no-op when the teams flag is off
+   - Anonymous `run_in_background: false` agents (per LAUNCH) usually reap themselves on return — this step is the backstop for any that linger, and a no-op when the teams flag is off
    - Do NOT carry a wave's agents into the next wave (violates "fresh agents only")
 
 6. UPDATE — Mark wave complete
@@ -381,7 +386,8 @@ When a gate reveals failures, always distinguish:
 | Wave N waits for Wave N-1 gate | Ensures dependencies exist |
 | Interface summary updated at gates | Downstream agents know what exists |
 | Fresh agents only (no resume) | Prevents context accumulation |
-| Wave agents spawned anonymous + foreground | Named/backgrounded agents become persistent teammates under the agent-teams flag and don't self-reap |
+| Wave agents spawned anonymous, with explicit `run_in_background: false` | The Agent tool backgrounds by default; omitting the flag detaches the agent. Named/backgrounded agents become persistent teammates under the agent-teams flag and don't self-reap |
+| `ToolSearch("select:TaskList,TaskStop")` run before the first teardown | Both are deferred tools; a direct call fails with `InputValidationError` and teardown silently never happens |
 | No stale teammates after a wave | Teardown step reaps any teammate the agent-teams harness left alive; keeps "fresh agents only" true |
 | Orchestrator owns commits | Agents don't commit; orchestrator verifies first |
 | Orchestrator owns gate fixes | Agent re-launch is wasteful for 1-3 line fixes |
@@ -395,7 +401,8 @@ When a gate reveals failures, always distinguish:
 | Don't | Do Instead |
 |-------|------------|
 | Resume agents across waves | Fresh agent + interface summary |
-| Name or background wave agents (makes them persistent teammates) | Spawn anonymous + foreground; reserve named teammates for `spawn-team` |
+| Name wave agents, or omit `run_in_background` (both make them persistent teammates) | Spawn anonymous with explicit `run_in_background: false`; reserve named teammates for `spawn-team` |
+| Call `TaskList` / `TaskStop` without loading their schemas | `ToolSearch("select:TaskList,TaskStop")` first — they are deferred tools |
 | Leave teammates running after a wave completes | `TaskList` + `TaskStop` stale agents in the teardown step |
 | Inject full reference files | Extract specific excerpts |
 | Launch agents in separate messages | Single message, multiple Task calls |
@@ -445,11 +452,11 @@ docs/plans/YYYY-MM-DD-<feature>/
 1. **Read plan** → `agent-plan.md` (rules), `progress.md` (status), `waves.md` (definitions)
 2. **Print SCOPE CONTRACT and wait for user approval** → allowed dirs / off-limits dirs / required test files / per-wave verification command. No Agent dispatch until approved.
 3. **Create tasks** → One per wave, with blockedBy dependencies
-4. **Execute Wave 1** → Single message, parallel Agent calls — anonymous + foreground (sonnet by default)
+4. **Execute Wave 1** → Single message, parallel Agent calls — anonymous, `run_in_background: false` (sonnet by default)
 5. **Verify outputs** → Orchestrator reads created/modified files
 6. **Run gate** → Integration test commands from waves.md
 7. **Commit** → Atomic commit, stage specific files only
-8. **Teardown** → `TaskList` + `TaskStop` any stale wave teammate (agent-teams harness; no-op if flag off)
+8. **Teardown** → `ToolSearch("select:TaskList,TaskStop")` once per session, then `TaskList` + `TaskStop` any stale wave teammate
 9. **Update tracking** → Mark task completed, update progress.md with commit hash
 10. **Auto-proceed** → Next wave immediately if gate passed and user authorized
 11. **On completion** → Update top-level `docs/plans/progress.md` index (move dir to `archived/`)

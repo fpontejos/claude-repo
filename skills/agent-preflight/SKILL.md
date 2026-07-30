@@ -74,11 +74,36 @@ If the agent's only deliverable is "text in the response", that's fine — but s
 
 Spawn a fresh agent unless explicitly continuing prior work via `SendMessage`. Resumed agents accumulate context and degrade in quality.
 
+`SendMessage` is a **deferred** tool — its schema is not in the base toolset. Run `ToolSearch("select:SendMessage")` before the first call, or it fails with `InputValidationError`.
+
+### 1.6b Dispatch mode: background vs foreground (decide explicitly)
+
+**The Agent tool backgrounds by default.** From the tool description: *"Subagents run in the background by default; you'll be notified when one completes. Pass `run_in_background: false` for a synchronous run when you need the result before continuing."*
+
+State which mode you want before dispatching — never leave it implicit:
+
+| Situation | Setting |
+|---|---|
+| You need the result before you can continue (wave workers, verifiers, anything you will gate on) | `run_in_background: false` **explicitly** |
+| Genuinely fire-and-forget work you will pick up from a later notification | omit the flag (background) |
+
+Omitting the flag when you meant foreground is the most common cause of *"the agent went idle and never delivered its report"*: the agent detaches, the orchestrator moves on without a result, and under the agent-teams harness the detached agent lingers as a teammate instead of reaping. See `orchestrating-agent-waves` §Dispatch Model.
+
+Two corollaries:
+
+- **A pending agent is not a failed agent.** If a background dispatch has not reported yet, do not classify it, do not re-dispatch it, and never write the completion notification yourself. Wait for the notification.
+- **Passing a `name` keeps the agent alive** and addressable via `SendMessage`. Omit `name` for throwaway workers.
+
 ---
 
 ## Gate 2: Post-Flight Check
 
-After every Agent/Task call returns, check before acting on the result:
+Run these checks when the agent's result is **actually in hand**, before acting on it. When that moment arrives depends on the dispatch mode chosen in Gate 1.6b:
+
+- **`run_in_background: false`** → the result returns inline as the tool result. Check it immediately.
+- **Background dispatch** → there is no inline return. The result arrives later as a task notification. Gate 2 fires **on the notification**, not on the dispatch call.
+
+**Do not run Gate 2 against a still-pending agent.** An agent that has not reported yet has not failed — it has not finished. Treating "no result yet" as `silent_failure` produces a spurious re-dispatch and a duplicate agent. If you need to inspect a background agent mid-flight, load and use `TaskOutput` / `TaskList` (`ToolSearch("select:TaskList,TaskOutput")`) rather than inferring.
 
 ### 2.1 Output present?
 
@@ -111,7 +136,8 @@ If Gate 2 finds a problem, classify before retrying. Apply the matched fix. Cap 
 
 | Mode | Symptoms | Fix |
 |---|---|---|
-| `silent_failure` | Empty return, no artifact, no error text | Fresh agent, same prompt, log the empty return in your reply to the user so they know it happened |
+| `silent_failure` | Empty return, no artifact, no error text | Fresh agent, same prompt, log the empty return in your reply to the user so they know it happened. First rule out `detached_dispatch` below — a pending agent is not an empty one |
+| `detached_dispatch` | No result at all; the agent is still listed as running/idle in `TaskList`; `run_in_background` was omitted on a call you meant to be synchronous | Not a failure — the agent was backgrounded by default (Gate 1.6b). Wait for its notification, or `TaskStop` it and re-dispatch with explicit `run_in_background: false`. Do NOT classify as `silent_failure` and do NOT re-dispatch a second concurrent copy |
 | `permission_gap` | Output describes what it *would* do, but file missing | Check `subagent_type` tool list — was `Write`/`Edit`/`Bash` missing? Re-dispatch with correct type |
 | `wrong_tool` | Agent used `cat` instead of Read, `find` instead of Glob, etc. | Prompt explicitly: "Use Read tool, not bash cat. Use Glob, not find." Re-dispatch fresh |
 | `scope_creep` | Agent edited files outside allowed paths | Revert those edits, re-dispatch with explicit "DO NOT touch X, Y, Z" |
@@ -140,13 +166,33 @@ If Gate 2 finds a problem, classify before retrying. Apply the matched fix. Cap 
 | Retry more than twice | Escalate to user after 2 failures |
 | Resume a failed agent via SendMessage | Spawn fresh — failed context is poisoned |
 | Trust "success" without checking the artifact | Always verify declared output exists |
+| Omit `run_in_background` on a dispatch you will gate on | Pass `run_in_background: false` explicitly — the tool backgrounds by default |
+| Treat a still-pending background agent as a silent failure | Wait for the notification; classify `detached_dispatch`, not `silent_failure` |
+| Call `SendMessage` / `TaskList` / `TaskStop` / `TaskOutput` directly | `ToolSearch("select:...")` first — all are deferred tools |
 | Embed tool-usage rules only in the spawn prompt for `spawn-team` agents | Send them as the first SendMessage too (per spawn-team) |
 
 ---
 
 ## Integration with hooks
 
-A `PostToolUse` hook on `Agent` can detect silent failures mechanically (empty output, missing artifact) and inject a system-reminder. The hook handles the *detection*; this skill handles the *classification and retry*. If the hook is installed (`~/.claude/hooks/agent-postflight.sh`), Gate 2.1 / 2.2 will fire automatically — but apply Gate 3 in either case.
+A `PostToolUse` hook on `Agent` can detect silent failures mechanically (tool reports success, output is empty/whitespace) and inject a system-reminder. The hook handles the *detection*; this skill handles the *classification and retry*.
+
+**Registration in `settings.json`** (the script path is whatever you name it — this skill assumes `detect-agent-failure.sh`):
+
+```json
+"PostToolUse": [
+  {
+    "matcher": "Agent",
+    "hooks": [
+      { "type": "command", "command": "~/.claude/hooks/detect-agent-failure.sh" }
+    ]
+  }
+]
+```
+
+Write the hook to fail open: on missing `jq` or malformed input, emit a no-op response so it can never block a dispatch.
+
+**Limits — do not rely on it as the only check.** It fires on the *tool result*, so it catches empty inline returns from `run_in_background: false` dispatches. It does **not** detect: a missing declared artifact (Gate 2.2), scope creep (Gate 2.3), thin-but-non-empty output (Gate 2.4), or a detached background agent that never reports. Run Gates 2 and 3 manually regardless of hook state.
 
 See `~/.claude/hooks/` for current hook scripts.
 
@@ -162,16 +208,22 @@ Before Agent():
   4. Bound the scope (allowed/off-limits paths)
   5. Self-contained prompt ≤ 10K tokens
   6. Fresh agent (no resume)
+  7. Dispatch mode EXPLICIT — run_in_background: false if you will gate on the result
+     (the Agent tool BACKGROUNDS BY DEFAULT; omitting the flag detaches the agent)
 
-After Agent() returns:
-  7. Output present and non-truncated?
-  8. Declared artifact exists?
-  9. Scope respected (no off-limits edits)?
-  10. Quality plausible vs contract?
+When the result is in hand (inline for foreground; on the task notification for background):
+  9.  Output present and non-truncated?
+  10. Declared artifact exists?
+  11. Scope respected (no off-limits edits)?
+  12. Quality plausible vs contract?
+  (A still-pending agent has NOT failed — do not run these against it.)
 
 On failure:
-  11. Classify against taxonomy
-  12. Apply matched fix
-  13. Fresh retry, max 2
-  14. Escalate after 2 failures
+  13. Classify against taxonomy (rule out detached_dispatch before silent_failure)
+  14. Apply matched fix
+  15. Fresh retry, max 2
+  16. Escalate after 2 failures
+
+Deferred tools — ToolSearch("select:...") before first use:
+  SendMessage, TaskList, TaskStop, TaskOutput
 ```

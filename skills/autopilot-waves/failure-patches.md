@@ -113,7 +113,7 @@ this task as your first sentence.
 
 **subagent_type override:** None — this is a prompt-discipline issue, not a tool-availability issue.
 
-**Don't:** Add the rule only to the spawn prompt for `spawn-team` agents — send it as the first `SendMessage` after spawn too (per `spawn-team` doctrine).
+**Don't:** Add the rule only to the spawn prompt for `spawn-team` agents — send it as the first `SendMessage` after spawn too (per `spawn-team` doctrine). `SendMessage` is a deferred tool: run `ToolSearch("select:SendMessage")` before the first call or it fails with `InputValidationError`.
 
 **Escalate if:** Second dispatch also reaches for bash equivalents — the task may genuinely require bash (e.g., complex sed pipeline). Surface to user and ask whether to relax tool discipline for this specific dispatch.
 

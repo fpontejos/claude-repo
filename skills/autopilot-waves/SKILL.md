@@ -109,7 +109,11 @@ digraph self_healing {
 
 This runs in place of steps 3–6 of the `orchestrating-agent-waves` per-wave loop (GATE, COMMIT, TEARDOWN, UPDATE).
 
-**Teammate lifecycle (agent-teams harness):** every dispatch this loop makes — wave agents, the verifier subagent (step 2), and re-dispatched retry agents (step 6) — is registered as a persistent teammate under `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` and does **not** self-reap. The autopilot loop spawns *more* agents per wave than the base loop (one verifier per gate, plus up to two retries), so stale-agent buildup is worse here. Spawn every agent **anonymous + foreground** (no `name`, no `run_in_background`), and reap survivors at wave close — see step 3 and the `orchestrating-agent-waves` §Dispatch Model.
+**Teammate lifecycle (agent-teams harness):** every dispatch this loop makes — wave agents, the verifier subagent (step 2), and re-dispatched retry agents (step 6) — is registered as a persistent teammate under `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` and does **not** self-reap. The autopilot loop spawns *more* agents per wave than the base loop (one verifier per gate, plus up to two retries), so stale-agent buildup is worse here.
+
+Spawn every agent **anonymous with an explicit `run_in_background: false`** (no `name`), and reap survivors at wave close — see step 3 and the `orchestrating-agent-waves` §Dispatch Model.
+
+> **The Agent tool backgrounds by default.** Omitting `run_in_background` detaches the agent; it must be passed as `false`. A detached verifier never returns its verdict inline, which stalls the loop at step 2 with an agent that looks idle.
 
 ```
 1. RUN GATE — Execute gate command from waves.md.
@@ -120,7 +124,7 @@ This runs in place of steps 3–6 of the `orchestrating-agent-waves` per-wave lo
    See: templates/verifier-prompt.md
 
 3. BRANCH on verdict:
-   - pass → commit feature/test/docs + **update plan-local progress.md** (see §Plan-local progress tracker) + **TEARDOWN** (reap this wave's agents + the verifier + any retry agents: `TaskList` → `TaskStop` survivors; no-op if the teams flag is off) + next wave (exit loop)
+   - pass → commit feature/test/docs + **update plan-local progress.md** (see §Plan-local progress tracker) + **TEARDOWN** (reap this wave's agents + the verifier + any retry agents: `ToolSearch("select:TaskList,TaskStop")` once per session, then `TaskList` → `TaskStop` survivors — both are deferred tools and fail with `InputValidationError` if called unloaded) + next wave (exit loop)
    - fail → continue to step 4
 
 4. SAFETY CHECKS (any "yes" → escalate, do not patch):
@@ -143,7 +147,7 @@ This runs in place of steps 3–6 of the `orchestrating-agent-waves` per-wave lo
 
 ## Verifier Subagent Contract
 
-Dispatch with `subagent_type: general-purpose`, **anonymous + foreground** (no `name`, no `run_in_background` — so it reaps on return instead of lingering as a teammate), and a fixed prompt (see `templates/verifier-prompt.md`). The verifier must return parseable structured output:
+Dispatch with `subagent_type: general-purpose`, **anonymous and explicitly foreground** (no `name`; `run_in_background: false` — so it returns its verdict inline and reaps on return instead of lingering as a teammate), and a fixed prompt (see `templates/verifier-prompt.md`). The verifier must return parseable structured output:
 
 ```yaml
 verdict: pass | fail
@@ -199,7 +203,8 @@ Optional: if the user later says "proceed", reset `retry_count` to 0 for the fai
 | Loop only entered for waves with cross-boundary gates | Prevents confidently auto-closing broken waves |
 | Patches modify the prompt, never the SCOPE CONTRACT | Preserves user-approved boundary |
 | Fresh agent on every retry | Failed context is poisoned |
-| All agents (wave, verifier, retries) spawned anonymous + foreground | Named/backgrounded dispatches become persistent teammates under the agent-teams flag and don't self-reap |
+| All agents (wave, verifier, retries) spawned anonymous with explicit `run_in_background: false` | The Agent tool backgrounds by default; omitting the flag detaches the agent and its verdict never returns inline. Named/backgrounded dispatches also become persistent teammates that don't self-reap |
+| `ToolSearch("select:TaskList,TaskStop")` run before the first teardown | Both are deferred tools; a direct call fails with `InputValidationError` |
 | No stale teammates after a wave closes | This loop spawns extra agents (verifier + retries); reap them all at wave close or they accumulate |
 | Max 2 retries per wave | Bounds the loop |
 | Different mode on retry #2 → escalate | Plan-level issue, not prompt-level |
@@ -221,7 +226,7 @@ Optional: if the user later says "proceed", reset `retry_count` to 0 for the fai
 | Expand SCOPE CONTRACT to satisfy a patch | Escalate; user re-approves expanded scope |
 | Skip the verifier and classify inline | Verifier's structured output is the audit trail |
 | Commit partial wave work on escalation | Leave wave uncommitted; user decides |
-| Name/background the verifier or retry agents | Spawn anonymous + foreground so they reap on return |
+| Name the verifier/retry agents, or omit `run_in_background` on them | Spawn anonymous with `run_in_background: false` so they return inline and reap |
 | Carry a wave's verifier/retry agents into the next wave | `TaskList` + `TaskStop` survivors at wave close |
 | Treat `confidence: low` verdicts as actionable | Treat as escalation |
 | Dispatch a test-writing agent without pinned expected values | Run the dry-run probe first; pin every `pytest.approx(...)` from the oracle |
@@ -249,10 +254,15 @@ Per wave (replacing GATE/COMMIT/UPDATE in orchestrating-agent-waves):
   3. If pass → commit + update plan-local progress.md + TEARDOWN (reap wave/verifier/retry agents) → next wave
   4. Safety checks (gate gap | refusal | retry==2 | scope expansion) → escalate
   5. Look up patch in failure-patches.md
-  6. Apply patch + subagent_type override → fresh dispatch (anonymous + foreground)
+  6. Apply patch + subagent_type override → fresh dispatch (anonymous, run_in_background: false)
   7. Increment retry_count → back to 1
 
-All dispatches anonymous + foreground (no name, no run_in_background) so they reap on return — see orchestrating-agent-waves §Dispatch Model.
+All dispatches anonymous with explicit run_in_background: false (no name) so they return
+inline and reap — the Agent tool BACKGROUNDS BY DEFAULT; omitting the flag detaches the
+agent. See orchestrating-agent-waves §Dispatch Model.
+
+Teardown tools are deferred: ToolSearch("select:TaskList,TaskStop") once per session
+before the first TaskList call.
 
 Plan-local docs (in <plan-dir>/):
   initial-status.md  — frozen truth reference (created once)
