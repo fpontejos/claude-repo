@@ -94,6 +94,16 @@ Two corollaries:
 - **A pending agent is not a failed agent.** If a background dispatch has not reported yet, do not classify it, do not re-dispatch it, and never write the completion notification yourself. Wait for the notification.
 - **Passing a `name` keeps the agent alive** and addressable via `SendMessage`. Omit `name` for throwaway workers.
 
+### 1.7 Runtime budget for long commands (>100s)
+
+If the task includes any command expected to run >100s (full test suites, builds, bakes):
+
+- **State the expected runtime and the required Bash `timeout` value in the prompt.** The harness silently auto-backgrounds any foreground Bash call that exceeds its default 120s timeout ("Command did not complete within its 120s timeout and was moved to the background (ID: …)") — subagents then end their turn "waiting" and never deliver their report.
+- **A command expected to exceed 600s (the max foreground timeout) must NOT be assigned to a subagent as a foreground gate at all** — it is structurally impossible to complete as instructed. Keep it orchestrator-owned, or split it into scoped selections the agent can finish.
+- Tell the agent: if a command is auto-backgrounded, never re-issue it unchanged — raise `timeout`, narrow scope, or report back.
+
+(Origin: a wave that stalled three times on a ~615s full-suite gate assigned to a subagent as a foreground command.)
+
 ---
 
 ## Gate 2: Post-Flight Check
@@ -142,6 +152,7 @@ If Gate 2 finds a problem, classify before retrying. Apply the matched fix. Cap 
 | `wrong_tool` | Agent used `cat` instead of Read, `find` instead of Glob, etc. | Prompt explicitly: "Use Read tool, not bash cat. Use Glob, not find." Re-dispatch fresh |
 | `scope_creep` | Agent edited files outside allowed paths | Revert those edits, re-dispatch with explicit "DO NOT touch X, Y, Z" |
 | `context_overflow` | Truncated output, "I'll continue in next response", agent hit limits | Smaller scope per dispatch; split into two agents with distinct files |
+| `timeout_stall` | Final message is "waiting for background task …"; Bash result shows "moved to the background" | NOT agent-chosen backgrounding — the harness timed out a foreground call (Gate 1.7). Take over the long command yourself, or re-dispatch with an explicit `timeout` / narrower gate. Do not instruct "don't spawn background jobs" — the agent never did |
 | `wrong_understanding` | Output is coherent but solves a different problem | Prompt was ambiguous — rewrite with concrete examples, file paths, expected output sample |
 | `quality_below_bar` | Output exists, in scope, but shallow / generic | Add specificity to the prompt: required sections, citations, file:line refs. Fresh agent |
 | `legitimate_refusal` | Agent says "I can't / won't do X" with a reason | Do not retry. Read the reason, adjust the request, or escalate |
@@ -210,6 +221,7 @@ Before Agent():
   6. Fresh agent (no resume)
   7. Dispatch mode EXPLICIT — run_in_background: false if you will gate on the result
      (the Agent tool BACKGROUNDS BY DEFAULT; omitting the flag detaches the agent)
+  8. Commands >100s: state runtime + timeout; >600s: orchestrator-owned, never a subagent foreground gate
 
 When the result is in hand (inline for foreground; on the task notification for background):
   9.  Output present and non-truncated?
