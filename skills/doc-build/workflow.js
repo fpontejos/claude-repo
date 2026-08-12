@@ -19,7 +19,8 @@ export const meta = {
 //   repo_root:    string   — absolute path to the repository root
 //   is_git:       boolean  — false strips all commit steps
 //   new_page_globs: string[] — path fragments identifying THIS suite's pages in build logs
-//                              (e.g. ["concepts/", "fields/", "index.md"])
+//                              (e.g. ["concepts/", "fields/"]; avoid fragments that match
+//                              pre-existing pages, like a bare "index.md")
 //   writers: [{
 //     name:            string   — e.g. "core-writer"
 //     files_to_write:  string[] — doc paths from the plan nav (disjoint across writers)
@@ -92,7 +93,8 @@ const VERIFY_SCHEMA = {
     link_notices_on_new_pages: {
       type: 'array',
       items: { type: 'string' },
-      description: 'build-log link/validation notices that reference the new pages, even ones --strict tolerates',
+      description:
+        'build-log link/validation notices referencing the new pages (even ones --strict tolerates) that remain UNRESOLVED after fixes; resolved notices belong in fixes_applied',
     },
     fixes_applied: { type: 'array', items: { type: 'string' } },
     fix_commit: { type: 'string', description: 'hash of the verification-fix commit, or "none"' },
@@ -240,10 +242,16 @@ ${liveWriters
   .map(
     (x) => `
 - Writer ${x.writer.name}: message "${x.writer.commit_message}"
-  files: ${JSON.stringify(x.result.files_written)}
+  assigned files: ${JSON.stringify(x.writer.files_to_write)}
+  reported written: ${JSON.stringify(x.result.files_written)}
   command shape: git add -- <files> && git commit -m "<message>" -- <files>`,
   )
   .join('\n')}
+
+Commit ONLY files that appear in the writer's assigned list (treat an obvious
+path-form variant of an assigned entry — e.g. with vs without the docs-root prefix —
+as that entry). A reported file outside the assignment is scope drift: do NOT commit
+it; record it in skipped as "<writer>: out-of-scope <path>".
 
 If a listed file does not exist on disk, omit it from that commit and note it. If a
 writer's entire file list is missing, skip that writer's commit and record it in skipped.
@@ -282,11 +290,13 @@ Repository root: ${args.repo_root}
    fragments: ${JSON.stringify(args.new_page_globs)}.
 4. Fix what you find when the fix is unambiguous (broken relative link, wrong anchor,
    out-of-docs-dir link that must become inline code). Re-run the build after fixing.
-5. ${args.is_git ? 'If you fixed anything, commit the fixes as ONE pathspec-scoped commit: "docs: fix link/build issues found in verification". Report its hash as fix_commit.' : 'Do not commit (not a git repository). Report fix_commit as "none".'}
+5. ${args.is_git ? 'If you fixed anything, commit the fixes as ONE pathspec-scoped commit: "docs: fix link/build issues found in verification". Before committing, run git status --porcelain; if any path shows unmerged status (UU, AA, DD, AU, UA, DU, UD), git refuses all commits — leave the fixes uncommitted, report fix_commit as "none", and list the unmerged paths in errors. Otherwise report the commit hash as fix_commit.' : 'Do not commit (not a git repository). Report fix_commit as "none".'}
 6. Do NOT fix pre-existing notices on pages outside the new-page fragments — report them
    in link_notices_on_new_pages only if they reference new pages.
 
-Your structured output: build_clean, errors, link_notices_on_new_pages, fixes_applied, fix_commit.`,
+Your structured output: build_clean, errors, link_notices_on_new_pages (only notices
+still unresolved after your fixes — resolved ones go in fixes_applied), fixes_applied,
+fix_commit.`,
   { label: 'verifier', phase: 'Verify', schema: VERIFY_SCHEMA },
 )
 
@@ -295,7 +305,12 @@ const commitsOk =
 
 return {
   status:
-    verify && verify.build_clean && deadWriters.length === 0 && allGaps.length === 0 && commitsOk
+    verify &&
+    verify.build_clean &&
+    verify.link_notices_on_new_pages.length === 0 &&
+    deadWriters.length === 0 &&
+    allGaps.length === 0 &&
+    commitsOk
       ? 'complete'
       : 'complete_with_issues',
   scaffold: { stub_count: scaffold.stub_count, commit: scaffold.commit },

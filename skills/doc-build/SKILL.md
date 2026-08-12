@@ -30,7 +30,7 @@ Build a documentation suite from scratch using a scaffold-then-write pattern, ex
    | 20+ modules | 5 | one per major subsystem; keep reference separate |
 
    Never exceed 5 writers — larger scopes run as two sequential doc-build invocations on different subsections. Verify disjointness of both `files_to_write` and `source_files` across writers.
-5. **New-page globs.** Derive `new_page_globs` — path fragments that identify this suite's pages in a build log (e.g. `["concepts/", "fields/", "index.md"]`). The verifier uses these to separate our link notices from pre-existing corpus noise.
+5. **New-page globs.** Derive `new_page_globs` — path fragments that identify this suite's pages in a build log (e.g. `["concepts/", "fields/"]`). The verifier uses these to separate our link notices from pre-existing corpus noise — so avoid fragments that match pre-existing pages (`index.md` matches every index page in the corpus; use a directory-qualified form instead).
 6. **Specialist agents (optional).** If a custom agent type clearly fits a writer's domain (per `.claude/agents/` definitions), set that writer's `agent_type`. Default: omit (general-purpose workflow agent).
 
 ## Step 2: Invoke the workflow
@@ -99,6 +99,6 @@ Polish and audit are independent: polish edits the suite, audit judges it. When 
 | Scenario | Action |
 |---|---|
 | Scaffold gate fails | Workflow returns early with `build_errors`. Fix the plan/config issue, resume the run. |
-| A writer returns null (died) | Reported in `dead_writers` (all writers dead → `status: failed` before commit/verify). Stop the prior run (`TaskStop`), check the journal (`<transcriptDir>/journal.jsonl`), then re-invoke with `resumeFromRunId` — surviving results are cached. |
+| A writer returns null (died) | Reported in `dead_writers` (all writers dead → `status: failed` before commit/verify). If the run is still registered, stop it first (`TaskStop`) — a run that returned normally needs no stop. Check the journal (`<transcriptDir>/journal.jsonl`), then re-invoke with `resumeFromRunId` — surviving results are cached. |
 | Unmerged git paths discovered mid-run | Commit serializer reports all writers skipped. Surface to the user; after they resolve, resume — writer output is on disk, only commits re-run. |
 | Plan and source disagree | Writers follow source and record it in `corrections_vs_plan`; relay these to the user verbatim. |

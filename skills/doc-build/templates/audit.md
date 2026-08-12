@@ -230,7 +230,7 @@ Verdict: [PASS | PASS WITH NOTES | FAIL]
 
 Coverage: N/N pages, N uncovered requirements
 Accuracy: N claims sampled, N wrong, N dangling refs
-Reader:   [PASS | NOTES | FAIL] — [one sentence]
+Reader:   [PASS | PASS WITH NOTES | FAIL] — [one sentence]
 
 Action items: N (or "None")
 Report: {output_dir}verdict.md
