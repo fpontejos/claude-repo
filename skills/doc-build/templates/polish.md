@@ -1,7 +1,7 @@
 # Template: polish register — objective specification voice
 
-> **Editing standard** for the optional Polish phase of the `/doc-build` skill, and the
-> register bar SKILL.md suggests including in writer prompts. Self-contained: it does not
+> **Editing standard** for the optional Polish phase of the `/doc-build` skill —
+> applied after a build by fresh agents. Self-contained: it does not
 > depend on any other skill being installed. Scope: this document defines *how the prose
 > should read*; the polish agent's operating constraints (assigned files, no factual
 > changes, no git, no builds) come from the dispatch prompt in SKILL.md §Polish.

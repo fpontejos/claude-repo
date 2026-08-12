@@ -26,7 +26,7 @@
 | `build_cmd` | Same build/verify command as the build run |
 | `docs_root` | Root of the docs directory |
 | `repo_root` | Absolute path to the repository root |
-| `writers[]` | The build run's domain split — each writer's `files_to_write` + `source_files` (drives the accuracy-checker's sampling) |
+| `writers[]` | The build run's domain split — each writer's `files_to_write` + `source_files` (drives the accuracy-checker's sampling). Read from the run's `doc-build-args.json` when one exists |
 | `output_dir` | Where reviewer reports and the verdict land (e.g. `docs/plans/<date>-<feature>-docs/audit/`) |
 | `conventions_context` | Optional free text: project docs conventions, terminology rules, style decisions to check against |
 
@@ -135,6 +135,13 @@ Per-domain source files (from the build's domain split):
 5. **Terminology consistency**: the same concept must carry the same name
    across different writers' sections.
    {paste: conventions_context, if provided}
+
+6. **ADR provenance** (only if the suite contains ADRs): ADR claims are
+   against history, not the source at HEAD. Confirm every Provenance anchor
+   resolves (git cat-file -e <hash>). Confirm each ADR's Status matches the
+   state of the code at HEAD. Treat a dangling symbol reference inside a
+   Superseded ADR as expected — it references deliberately removed code —
+   not as a finding.
 
 Evidence rule: every finding cites doc file:line AND the source symbol or file
 that contradicts it. Severity: BLOCKER (wrong claim a reader would rely on) /

@@ -2,7 +2,8 @@
 
 > **Reference spec** for the `/doc-build` skill. `SKILL.md` (pre-flight + invocation +
 > reporting) and `workflow.js` (execution) are the executable form; this file carries
-> the full role prompts, quality bars, and report formats the workflow encodes.
+> the domain-split guidance, per-writer quality bars, and report formats. Role prompt
+> text lives ONLY in `workflow.js` — it is the single source; do not mirror it here.
 
 **Purpose:** Build a full documentation suite from scratch using a scaffold-then-write pattern: one agent sets up the structure and verifies the build, then parallel domain-based writer agents fill in the content, then commits are serialized and the build is verified once.
 
@@ -12,7 +13,7 @@
 - Rebuilding docs from scratch after a major refactor
 - Any docs task with 10+ files that can be split by source-code domain
 
-**Key design principle:** Assign writers by **source file domain** (which files they need to read), not by output doc type. This eliminates repeated reads of the same source files across agents.
+**Key design principle:** Assign writers by **source file domain** (which files they need to read), not by output doc type. This eliminates repeated reads of the same source files across agents. Write-disjointness (no doc file owned by two writers) is the safety property; read-disjointness is a cost optimization, relaxed only for the optional ADR writer, whose source domain is repository history rather than files at HEAD.
 
 ---
 
@@ -28,6 +29,8 @@
 | `is_git` | From `git rev-parse --is-inside-work-tree`; false strips all commit steps |
 | `new_page_globs` | Path fragments identifying this suite's pages in build logs (e.g. `["concepts/", "fields/"]`) |
 | `writers[]` | Domain split output: name, files_to_write, source_files, commit_message per writer |
+| `writers[].history_scope` | ADR writer only: bounded history window (release tag, last N commits, or plan-specified date) |
+| `writers[].decision_candidates` | ADR writer only: pre-flight decision inventory (`{slug, anchors, paths}` each); presence selects the ADR role prompt |
 
 Pre-flight also checks for unmerged git paths (`UU` etc.) — an unmerged path blocks all commits repo-wide; stop and surface it before invoking the workflow.
 
@@ -45,7 +48,27 @@ Read `plan_path` and analyze the source code to determine the domain split. The 
 | `feature-writer` | Feature modules, algorithms, domain logic | Feature specs, how-it-works, KB articles |
 | `reference-writer` | Config, CLI, API endpoints, deployment | Reference docs, configuration guides, API surface |
 
-**If source files are concentrated in one domain:** Collapse to 2 writers. If spread across 5+ distinct modules: expand to 4-5 writers. Never assign the same source file — or the same doc file — to two different writers.
+**If source files are concentrated in one domain:** Collapse to 2 writers. If spread across 5+ distinct modules: expand to 4-5 writers. Never assign the same doc file to two writers; never assign the same source file to two prose writers (the ADR writer reads across domains by design).
+
+### Optional: ADR writer (decision-record inventory)
+
+One additional writer whose inputs are repository history. Requires its own pre-flight, run between the domain split and the new-page globs:
+
+1. **Bound the history** (`history_scope`): since the last major release tag, the last N commits, or since a plan-specified date. Full history on a mature repo is unaffordable and mostly noise.
+2. **Enumerate candidates** with read-only queries:
+   - `git log --oneline --no-merges <scope>` for the narrative spine; `git log --merges` for PR-shaped work where the merge body carries the rationale.
+   - `git log --diff-filter=A` on directory adds, `--diff-filter=D` on deletes — an introduced or removed module is almost always a decision.
+   - `git log -S'<symbol>' --oneline` (pickaxe) to date a specific construct.
+   - `git log --grep='revert\|Revert'` — a revert followed by a reland is a decision with two data points.
+   - `git log --format='%H %s' --follow <path>` on high-churn files; churn marks contested choices.
+   - Dependency manifests (`pyproject.toml`, `package.json`, lockfiles) across the scope — a dependency added or dropped is a decision with a legible date.
+3. **Size:** cluster into 5–15 decisions. Fewer than 5 → fold into `core-writer`; more than 15 → narrow the scope. The ADR writer counts against the 5-writer ceiling.
+4. **Number globally:** continue from the highest existing ADR number on disk — a later invocation must not restart at 0001.
+5. `files_to_write` = concrete `adr/NNNN-<slug>.md` pages + `adr/index.md`; `source_files: []`; add `"adr/"` to `new_page_globs`.
+
+The ADR writer returns the standard writer fields plus `unrecorded_rationale`: written ADRs whose Context states the reasoning was never captured. Distinct from `gaps` (unwritten files); a finding about the repository, not a run defect — reported, never status-affecting.
+
+Known limits: cross-run supersession would require editing an earlier run's files, which write-disjointness forbids — surface it instead; squash-merged history lowers rationale recovery, lengthening `unrecorded_rationale`.
 
 ---
 
@@ -71,7 +94,7 @@ Phase 4: Verify        → one verifier agent: final {build_cmd} + link-notice
 | Phase | Agent(s) | Returns |
 |-------|----------|---------|
 | Scaffold | `scaffold` | build_clean, build_errors, stub_count, commit |
-| Write | one per writer | files_written, approx_lines, corrections_vs_plan, gaps |
+| Write | one per writer | files_written, approx_lines, corrections_vs_plan, gaps (+ unrecorded_rationale for the ADR writer) |
 | Commit | `commit-serializer` | commits (writer, hash, files), skipped |
 | Verify | `verifier` | build_clean, errors, link_notices_on_new_pages, fixes_applied, fix_commit |
 
@@ -83,126 +106,19 @@ Phase 4: Verify        → one verifier agent: final {build_cmd} + link-notice
 
 ## Role Prompts
 
-Canonical prompt text lives in `workflow.js`; the versions below carry the full quality bars for reference and adaptation.
+Canonical prompt text lives ONLY in `workflow.js` (scaffold, prose writer, ADR writer,
+commit serializer, verifier). Earlier revisions mirrored the full prompts here; the
+mirror drifted from the script twice, so it was removed — read the script for the
+prompts. This section carries only what the workflow does not encode.
 
-### Scaffold
-
-```
-You are the scaffold agent for the "{feature}" documentation suite.
-
-Read the implementation plan first: {plan_path}
-
-Then, IN ORDER:
-1. Create the directory structure exactly as specified in the plan.
-2. Write the main config file (mkdocs.yml / _quarto.yml / etc.) with:
-   - All nav entries pre-populated (even for files that don't exist yet)
-   - Theme, plugins, and extensions as specified in the plan
-3. Write stub files for every doc listed in the plan nav:
-   - Each stub contains: frontmatter (if required), an H1 heading, and one line "TODO: content"
-   - Use the exact file paths from the plan
-4. Run: {build_cmd}
-   - It must pass with zero errors. If it fails, fix the cause (usually: missing
-     file in nav, bad YAML syntax, wrong path) and re-run until clean.
-5. Write the docs index/README: 1-paragraph overview + a table linking each
-   major section.
-6. Commit ONLY the new docs files, pathspec-scoped:
-   git add <paths> && git commit -m "docs: scaffold {feature} structure with N stubs" -- <paths>
-   (Skip this step if not a git repository.)
-
-Report build_clean only from actual command output, never from inference.
-
-Structured output: build_clean, build_errors, stub_count, commit.
-```
-
-### Writers (core / feature / reference)
-
-Common frame, per-writer assignment filled from the domain split:
-
-```
-You are {writer-name} for the "{feature}" documentation suite.
-
-Read the implementation plan first: {plan_path}
-
-Your assignment (files outside this list are off-limits — another writer owns them):
-- Files to write: [from domain split]
-- Source files to read: [from domain split]
-
-For each doc:
-1. Read the relevant source files — document the actual implementation, not the
-   intended one.
-2. If the plan and the source code disagree, follow the source code and record
-   the discrepancy in corrections_vs_plan.
-3. Cross-reference sibling docs with relative links — but ONLY within {docs_root}.
-   A link to a file outside the docs dir cannot be a doc link; render such
-   references as inline code.
-
-Quality bar:
-- Every factual claim must be verifiable from the source you read.
-- Reference code by symbol name (`ClassName.method()`, `module.function()`) —
-  never file:line; line numbers go stale on the next edit.
-- No placeholder text. If you lack information for an assigned file, leave its
-  stub intact and record it in gaps.
-
-HARD RULES (shared checkout):
-- Do NOT run git commit, git add, or any git-mutating command.
-- Do NOT run {build_cmd} or any docs build.
-- Write ONLY the files in your assignment.
-
-Structured output: files_written, approx_lines, corrections_vs_plan, gaps.
-```
-
-Per-writer additions:
+**Per-writer additions** (fold into a writer's plan section or its `agent_type`
+selection; the common prompt in `workflow.js` already covers the shared quality bar):
 
 - **core-writer:** include code examples from the actual source where helpful.
 - **feature-writer:** prefer concrete examples over abstract descriptions; use numbered lists or Mermaid flowcharts for algorithms and multi-step processes (diagram render is confirmed by the Verify phase).
 - **reference-writer:** reference docs must reflect the actual interface — document every endpoint/parameter/response shape, every config option with type/default/example, every CLI command and flag; use tables for option lists.
 
-### Commit Serializer
-
-```
-First run git status --porcelain. If ANY path is unmerged (UU, AA, DD, AU, UA,
-DU, UD), STOP — git refuses all commits repo-wide; report every writer as
-skipped with the unmerged paths listed.
-
-Otherwise create ONE commit per writer, in order, each scoped with explicit
-pathspecs so nothing pre-staged or unrelated leaks in:
-  git add -- <files> && git commit -m "<writer's commit_message>" -- <files>
-
-Commit ONLY files in the writer's assigned files_to_write (treat obvious
-path-form variants as the same file). A reported file outside the assignment
-is scope drift: do not commit it; record it in skipped.
-
-Omit missing files from a commit and note them; skip a writer whose entire file
-list is missing. Verify each commit landed via git log --oneline before
-reporting its hash.
-
-Structured output: commits (writer, hash, files count), skipped.
-```
-
-Commit message convention per writer: `docs(core): <brief>`, `docs(features): <brief>`, `docs(reference): <brief>`.
-
-### Verifier
-
-```
-1. Run {build_cmd}, capture the FULL output to a log file, and check the exit
-   code directly — no piping that masks it.
-2. Collect every error.
-3. Sweep the log for link/validation notices (INFO and WARNING included —
-   --strict passes some silently) that reference this suite's pages, matched
-   via new_page_globs.
-4. Fix what is unambiguous (broken relative link, wrong anchor, out-of-docs-dir
-   link that must become inline code). Re-run the build after fixing.
-5. Commit fixes as ONE pathspec-scoped commit: "docs: fix link/build issues
-   found in verification". Before committing, check git status --porcelain for
-   unmerged paths (UU etc.) — if any, leave fixes uncommitted, report
-   fix_commit as "none", list the unmerged paths in errors. (Skip commit if
-   not a git repository.)
-6. Do NOT fix pre-existing notices on pages outside new_page_globs.
-
-Structured output: build_clean, errors, link_notices_on_new_pages (only
-notices still unresolved after fixes — resolved ones go in fixes_applied),
-fixes_applied, fix_commit.
-```
+**Commit message convention** per writer: `docs(core): <brief>`, `docs(features): <brief>`, `docs(reference): <brief>`, `docs(adr): <brief>`.
 
 ---
 
@@ -225,6 +141,7 @@ Commits: N | Files: N | Lines: ~N
 | verify fixes | <hash or none> | — | — |
 
 Corrections vs. plan: [from writers, or "None"]
+Unrecorded rationale: [from adr-writer, if present — reported, never status-affecting]
 Gaps / dead writers / skipped commits: [lead with these if any]
 Link notices on new pages: [from verifier]
 ```
@@ -242,4 +159,4 @@ Link notices on new pages: [from verifier]
 | 10–20 modules | 4 | core + pipeline + features + reference |
 | 20+ modules | 5 | Add one writer per major subsystem; keep reference separate |
 
-Never exceed 5 writers. If the scope is larger, run two sequential doc-build invocations on different subsections.
+Never exceed 5 writers. If the scope is larger, run two sequential doc-build invocations on different subsections. An ADR writer, if used, counts against the ceiling — fold ADRs into `core-writer` when the decision inventory is under 5.

@@ -24,16 +24,24 @@ export const meta = {
 //   writers: [{
 //     name:            string   — e.g. "core-writer"
 //     files_to_write:  string[] — doc paths from the plan nav (disjoint across writers)
-//     source_files:    string[] — source files this writer reads (disjoint across writers)
+//     source_files:    string[] — source files this writer reads (disjoint across prose
+//                                 writers; the ADR writer declares [])
 //     commit_message:  string   — e.g. "docs(core): concepts and data model"
 //     agent_type?:     string   — optional custom subagent type
+//     history_scope?:  string   — ADR writer only: bounded history window (e.g. "since v2.0.0")
+//     decision_candidates?: [{ slug, anchors: string[], paths: string[] }]
+//                               — ADR writer only; presence selects the ADR role prompt
 //   }]
 // }
 //
 // Invariants the skill must guarantee before calling:
-// - No source file and no doc file assigned to two writers.
+// - No doc file assigned to two writers. No source file read by two PROSE writers
+//   (the ADR writer reads history across domains — read-disjointness is a cost
+//   optimization, write-disjointness is the safety property).
 // - git status has no unmerged (UU) paths — an unmerged path blocks ALL commits repo-wide.
-// - 2–5 writers (collapse or split domains to fit).
+// - 2–5 writers (collapse or split domains to fit); an ADR writer counts against the 5.
+// - ADR files_to_write are concrete at invocation (pre-flight decision inventory),
+//   numbered globally from the highest existing ADR on disk.
 
 const SCAFFOLD_SCHEMA = {
   type: 'object',
@@ -63,6 +71,24 @@ const WRITER_SCHEMA = {
     },
   },
   required: ['files_written', 'approx_lines', 'corrections_vs_plan', 'gaps'],
+}
+
+// ADR writer: WRITER_SCHEMA plus unrecorded_rationale. Distinct from gaps — a gap is an
+// unwritten file; an unrecorded rationale is a WRITTEN ADR whose Context states the
+// reasoning was never captured. A finding about the repository, not a run defect; it
+// does not affect status.
+const ADR_WRITER_SCHEMA = {
+  type: 'object',
+  properties: {
+    ...WRITER_SCHEMA.properties,
+    unrecorded_rationale: {
+      type: 'array',
+      items: { type: 'string' },
+      description:
+        'ADR slugs where the decision is evident but no rationale exists in history, plans, or comments; empty if none',
+    },
+  },
+  required: [...WRITER_SCHEMA.required, 'unrecorded_rationale'],
 }
 
 const COMMIT_SCHEMA = {
@@ -161,9 +187,68 @@ log(`Scaffold gate passed: ${scaffold.stub_count} stubs, build clean (commit ${s
 // ---------------------------------------------------------------------------
 phase('Write')
 
+const adrPrompt = (w) => `You are ${w.name} for the "${args.feature}" documentation suite.
+Repository root: ${args.repo_root}
+
+Read the implementation plan first: ${args.plan_path}
+
+Your assignment (files OUTSIDE this list are off-limits — another writer owns them):
+- Files to write: ${JSON.stringify(w.files_to_write, null, 2)}
+- History scope: ${w.history_scope}
+- Decision candidates (from pre-flight, with commit anchors):
+${JSON.stringify(w.decision_candidates, null, 2)}
+
+Write one ADR per candidate, in MADR-style sections: Title, Status, Date, Context,
+Decision, Consequences, Provenance. Then write the ADR index: a table of number, title,
+status, date, and the area of the system affected.
+
+EVIDENCE RULE — this is the quality bar for this role:
+Git history records what changed and when. It records why only when someone wrote it
+down. Every sentence in Context and Decision must be traceable to a commit message or
+body, a merge/PR description, a plan or design document, a code comment, or the diff
+itself. Cite the anchor in Provenance: commit hashes (short form), file paths, or
+document paths.
+
+Where the decision is evident from the diff but the reasoning was never recorded, write
+Context as the observable facts and state plainly: "Rationale not recorded in commit
+history." Then record the ADR slug in unrecorded_rationale. Do NOT reconstruct a
+plausible motive. An ADR with an invented Context is worse than no ADR — a reader
+cannot tell it from a real one.
+
+Status: mark Accepted for decisions still in force at HEAD. Mark Superseded by ADR-NNNN
+where a later decision in your set reverses or replaces an earlier one — you own the
+whole set, so supersession chains are yours to resolve. Verify current force against the
+code at HEAD, not against the commit that introduced it.
+
+Consequences: state observable results — constraints the decision imposes, work it made
+necessary, behaviour it rules out. Not speculation about benefits.
+
+Cross-reference concept and reference pages by their PLANNED path from the plan nav.
+Other writers are producing those pages right now; do not read their output and do not
+source any claim from it.
+
+HARD RULES (shared checkout — violating these corrupts other writers' work):
+- Read-only git ONLY: log, show, blame, diff, cat-file, rev-list, tag, shortlog. Never
+  commit, add, stash, checkout, switch, restore, worktree, rebase, gc, or status —
+  status refreshes the index and races other agents.
+- Do NOT run ${args.build_cmd} or any docs build.
+- Write ONLY the files in your assignment.
+- Cap blame to files under ~2000 lines; use log -S or log --follow instead on larger ones.
+
+Your structured output: files_written, approx_lines, corrections_vs_plan, gaps,
+unrecorded_rationale.`
+
 const writerResults = await parallel(
-  args.writers.map((w) => () =>
-    agent(
+  args.writers.map((w) => () => {
+    if (Array.isArray(w.decision_candidates)) {
+      return agent(adrPrompt(w), {
+        label: w.name,
+        phase: 'Write',
+        schema: ADR_WRITER_SCHEMA,
+        ...(w.agent_type ? { agentType: w.agent_type } : {}),
+      })
+    }
+    return agent(
       `You are ${w.name} for the "${args.feature}" documentation suite.
 Repository root: ${args.repo_root}
 
@@ -197,8 +282,8 @@ HARD RULES (shared checkout — violating these corrupts other writers' work):
 
 Your structured output: files_written, approx_lines, corrections_vs_plan, gaps.`,
       { label: w.name, phase: 'Write', schema: WRITER_SCHEMA, ...(w.agent_type ? { agentType: w.agent_type } : {}) },
-    ),
-  ),
+    )
+  }),
 )
 
 const liveWriters = writerResults
@@ -320,6 +405,8 @@ return {
     approx_lines: x.result.approx_lines,
     corrections_vs_plan: x.result.corrections_vs_plan,
     gaps: x.result.gaps,
+    // ADR writer only; surfaced in the report, never affects status
+    ...(x.result.unrecorded_rationale ? { unrecorded_rationale: x.result.unrecorded_rationale } : {}),
   })),
   dead_writers: deadWriters,
   commits: commitResult,
